@@ -1,0 +1,8 @@
+.tools/
+dist/
+.zig-cache/
+*.obj
+*.pdb
+mcp-repository/
+build/
+__pycache__/

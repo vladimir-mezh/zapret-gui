@@ -1,0 +1,28 @@
+# Zapret GUI MCP · 0.2.0
+
+Отдельный необязательный stdio MCP для [Zapret GUI](https://github.com/vladimir-mezh/zapret-gui). Собственные версии и релизы; исходники GUI не нужны для сборки.
+
+В GUI выберите MCP → свой ИИ-клиент → **Подключить выбранный ИИ**. Автоматическая настройка доступна для Codex, Claude Desktop и Claude Code. Для других клиентов GUI копирует JSON.
+
+`ZapretMcpLauncher.exe` имеет постоянный путь и запускает версию из `manager.json`. При обновлении переподключите клиент; заново настраивать сервер не нужно. Старые версии сохраняются. Сервер запускает ИИ-клиент, не GUI.
+
+## Инструменты
+
+- `zapret_get_state`: профиль, ревизия, версии, стратегии.
+- `zapret_set_profile`: предпросмотр по умолчанию; сохранение с `dry_run: false` и `expected_revision`.
+- `zapret_import_version`: регистрация имеющейся папки Flowseal.
+- `zapret_check_files`: проверка файлов.
+
+Настройки: `%LOCALAPPDATA%\ZapretGUI\settings.json`. Сервер меняет профиль, а применение к службе выполняется через GUI. Произвольных команд, сетевых портов и API-ключей нет. Состояние подключения записывается после handshake и проверяется GUI по живому процессу.
+
+## Выпуск
+
+Windows, CMake и MSVC:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 0.2.0
+```
+
+Приложите к GitHub Release `ZapretMCP.exe`, `ZapretMcpLauncher.exe`, `mcp-manifest.json` и ZIP. Манифест содержит SHA-256 бинарников и лицензию JSON-библиотеки. Каждый изменённый бинарник получает новый номер версии. `api_version: 1` — контракт совместимости с GUI.
+
+Поддерживаются handshake-ревизии MCP от 2024-11-05 до 2025-11-25.
