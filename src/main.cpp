@@ -126,7 +126,7 @@ public:
         } else if(page==TESTS_PAGE) {
             button(TEST_CURRENT,L"Проверить доступность",286,158,238);button(TEST_SELECTED,L"Тест выбранной",538,158,200);button(TEST_ALL,L"Подобрать стратегию",752,158,232);
             EnableWindow(control(TEST_CURRENT),!mcpBusy);for(auto id:{TEST_SELECTED,TEST_ALL})EnableWindow(control(id),!mcpBusy&&!installs.empty()&&(!engine.installed||engine.owned));
-            auto parallel=combo(TEST_PARALLEL,538,210,446);item(parallel,"По одной стратегии");item(parallel,"По 3 одновременно (экспериментально)");comboSelect(parallel,testParallel?1:0);EnableWindow(parallel,!mcpBusy);
+            auto parallel=combo(TEST_PARALLEL,538,210,446);item(parallel,"По одной стратегии");item(parallel,"Все одновременно (экспериментально)");comboSelect(parallel,testParallel?1:0);EnableWindow(parallel,!mcpBusy);
             reportText=testReportText(testReport);add(TRANSCRIPT,L"EDIT",reportText,286,254,315,290,ES_MULTILINE|ES_READONLY|WS_VSCROLL,true);
             button(TEST_CANCEL,L"Остановить тесты",286,558,210);EnableWindow(control(TEST_CANCEL),testBusy);
             button(TEST_PICK,L"Выбрать рекомендацию",510,558,250);EnableWindow(control(TEST_PICK),!mcpBusy&&testReport.value("done",false)&&!testReport.value("cancelled",false)&&testReport.contains("best")&&testReport["best"].is_string());
@@ -393,7 +393,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
     INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);
     int argumentCount=0;auto arguments=CommandLineToArgvW(GetCommandLineW(),&argumentCount);
     if(arguments&&argumentCount==7&&std::wstring(arguments[1])==L"--test-action"&&std::wstring(arguments[3])==L"--config"&&std::wstring(arguments[5])==L"--parent"){
-        fs::path config(arguments[4]);auto mode=std::wstring(arguments[2]);DWORD parentId=wcstoul(arguments[6],nullptr,10);LocalFree(arguments);try{if(mode!=L"all"&&mode!=L"all-parallel"&&mode!=L"selected")throw std::runtime_error("Неизвестный режим теста.");runStrategyTests(config,mode!=L"selected",parentId,mode==L"all-parallel"?3:1);CoUninitialize();return 0;}catch(const std::exception& e){try{writeJsonAtomic(config.parent_path()/L"test-report.json",{{"done",true},{"error",e.what()},{"message",e.what()}});}catch(...){}CoUninitialize();return 1;}
+        fs::path config(arguments[4]);auto mode=std::wstring(arguments[2]);DWORD parentId=wcstoul(arguments[6],nullptr,10);LocalFree(arguments);try{if(mode!=L"all"&&mode!=L"all-parallel"&&mode!=L"selected")throw std::runtime_error("Неизвестный режим теста.");runStrategyTests(config,mode!=L"selected",parentId,mode==L"all-parallel"?128:1);CoUninitialize();return 0;}catch(const std::exception& e){try{writeJsonAtomic(config.parent_path()/L"test-report.json",{{"done",true},{"error",e.what()},{"message",e.what()}});}catch(...){}CoUninitialize();return 1;}
     }
     if(arguments&&argumentCount==5&&std::wstring(arguments[1])==L"--engine-action"&&std::wstring(arguments[3])==L"--config"){
         fs::path config(arguments[4]);auto action=utf8(arguments[2]);LocalFree(arguments);try{serviceAction(action,config);writeJsonAtomic(config.parent_path()/L"service-result.json",{{"ok",true}});CoUninitialize();return 0;}catch(const std::exception& e){try{writeJsonAtomic(config.parent_path()/L"service-result.json",{{"error",e.what()}});}catch(...){}CoUninitialize();return 1;}

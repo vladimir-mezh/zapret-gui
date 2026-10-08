@@ -3,6 +3,8 @@
 #include <atomic>
 #include <functional>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <tlhelp32.h>
 
 struct TestTarget {std::string name,url,group;};
@@ -91,6 +93,12 @@ public:
     bool running()const{return WaitForSingleObject(process,0)==WAIT_TIMEOUT;}
     ~TestProcess(){if(job)CloseHandle(job);if(process){WaitForSingleObject(process,5000);CloseHandle(process);}}
 };
+class TestStartupGate {
+    std::mutex mutex;std::condition_variable condition;size_t ready=0,total;uint64_t started=0;
+public:
+    explicit TestStartupGate(size_t count):total(count){}
+    uint64_t arrive(const std::function<bool()>& cancelled){std::unique_lock<std::mutex> lock(mutex);if(++ready==total){started=GetTickCount64();condition.notify_all();}while(ready<total&&!cancelled())condition.wait_for(lock,std::chrono::milliseconds(100));return started;}
+};
 inline std::wstring testReportText(const Json& report){
     if(report.empty())return L"Результатов пока нет.\r\n";
     std::wstring text=wide(report.value("message",""))+L"\r\n\r\n";
@@ -104,7 +112,7 @@ inline std::wstring testReportText(const Json& report){
     return text;
 }
 inline void protectTestFolder(const fs::path& path){fs::create_directories(path);PSECURITY_DESCRIPTOR sd=nullptr;if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)",SDDL_REVISION_1,&sd,nullptr))throw std::runtime_error("Не удалось защитить тестовые файлы.");BOOL present=FALSE,defaults=FALSE;PACL acl=nullptr;GetSecurityDescriptorDacl(sd,&present,&acl,&defaults);auto error=SetNamedSecurityInfoW((LPWSTR)path.c_str(),SE_FILE_OBJECT,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,acl,nullptr);LocalFree(sd);if(error!=ERROR_SUCCESS)throw std::runtime_error("Не удалось защитить папку тестов.");}
-inline void runStrategyTests(const fs::path& config,bool all,DWORD parentId,unsigned parallel=3){
+inline void runStrategyTests(const fs::path& config,bool all,DWORD parentId,unsigned parallel=128){
     EngineOperation operation;
     auto reportPath=config.parent_path()/L"test-report.json",cancelPath=config.parent_path()/L"test-cancel.flag";
     Json report={{"schema",1},{"kind","strategies"},{"done",false},{"cancelled",false},{"results",Json::array()},{"best",nullptr},{"message","Готовим тесты…"}};
@@ -116,7 +124,7 @@ inline void runStrategyTests(const fs::path& config,bool all,DWORD parentId,unsi
         if(before.installed&&!before.owned)throw std::runtime_error("Тесты стратегий недоступны: служба установлена другим менеджером. Проверка доступности работает без её изменения.");
         if(cancelled())throw std::runtime_error("Тесты отменены.");Store store(config);auto state=store.load();auto selected=std::find_if(state.installs.begin(),state.installs.end(),[&](auto& v){return v.id==state.profile.version;});if(selected==state.installs.end())throw std::runtime_error("Сначала установите Zapret.");auto version=*selected;auto profile=state.profile;
         report["version"]=version.id;report["revision"]=state.revision;
-        auto targets=testTargets(version.path);auto strategies=all?version.strategies:std::vector<std::string>{profile.strategy};if(strategies.size()>128)throw std::runtime_error("В версии слишком много стратегий для теста.");bool isolated=fs::is_regular_file(systemExe(L"curl.exe"));parallel=isolated?std::clamp(parallel,1u,3u):1;report["parallel"]=parallel;report["isolated_ports"]=isolated;
+        auto targets=testTargets(version.path);auto strategies=all?version.strategies:std::vector<std::string>{profile.strategy};if(strategies.size()>128)throw std::runtime_error("В версии слишком много стратегий для теста.");bool isolated=fs::is_regular_file(systemExe(L"curl.exe"));parallel=isolated?std::min<unsigned>((unsigned)strategies.size(),std::clamp(parallel,1u,128u)):1;report["parallel"]=parallel;report["isolated_ports"]=isolated;
         auto root=serviceFolder()/L"tests";protectTestFolder(root);auto runtime=root/(std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
         fs::copy(version.path,runtime,fs::copy_options::recursive);profile.ipset="any";prepareLists(runtime,profile);
         for(auto& strategy:strategies){profile.strategy=strategy;strategyArguments(version,profile,runtime);}
@@ -125,10 +133,10 @@ inline void runStrategyTests(const fs::path& config,bool all,DWORD parentId,unsi
         report["message"]="Проверяем соединения без тестовой стратегии…";writeJsonAtomic(reportPath,report);report["baseline"]=isolated?probeBoundTargets(targets,strategyPorts(127),cancelled):probeTargets(targets,cancelled);if(cancelled())throw std::runtime_error("Тесты отменены.");
         for(size_t batch=0;batch<strategies.size();batch+=parallel){
             if(cancelled())break;size_t count=std::min<size_t>(parallel,strategies.size()-batch);report["message"]="Проверяем стратегии "+std::to_string(batch+1)+"–"+std::to_string(batch+count)+" из "+std::to_string(strategies.size());writeJsonAtomic(reportPath,report);
-            std::vector<Json> rows(count);std::vector<std::thread> workers;
+            std::vector<Json> rows(count);std::vector<std::thread> workers;TestStartupGate gate(count);
             for(size_t slot=0;slot<count;slot++)workers.emplace_back([&,slot]{auto index=batch+slot;auto current=profile;current.strategy=strategies[index];auto ports=strategyPorts(index);Json row={{"strategy",current.strategy},{"targets",Json::array()},{"score",testScore(Json::array())}};
-                try{auto args=strategyArguments(version,current,runtime);TestProcess process(runtime/L"bin"/L"winws.exe",parallel>1?isolatedArguments(args,ports):wide(args));auto until=GetTickCount64()+4000;while(process.running()&&!cancelled()&&GetTickCount64()<until)Sleep(100);if(!cancelled()){if(!process.running())throw std::runtime_error("Стратегия завершилась до начала проверки.");row["targets"]=isolated?probeBoundTargets(targets,ports,cancelled):probeTargets(targets,cancelled);row["score"]=testScore(row["targets"]);if(!process.running())throw std::runtime_error("Тестовый процесс завершился во время проверки.");}}
-                catch(const std::exception& e){row["error"]=e.what();row["score"]=testScore(Json::array());}rows[slot]=row;
+                bool arrived=false;try{auto args=strategyArguments(version,current,runtime);TestProcess process(runtime/L"bin"/L"winws.exe",parallel>1?isolatedArguments(args,ports):wide(args));arrived=true;auto until=gate.arrive(cancelled)+4000;while(process.running()&&!cancelled()&&GetTickCount64()<until)Sleep(100);if(!cancelled()){if(!process.running())throw std::runtime_error("Стратегия завершилась до начала проверки.");row["targets"]=isolated?probeBoundTargets(targets,ports,cancelled):probeTargets(targets,cancelled);row["score"]=testScore(row["targets"]);if(!process.running())throw std::runtime_error("Тестовый процесс завершился во время проверки.");}}
+                catch(const std::exception& e){if(!arrived)try{gate.arrive(cancelled);}catch(...){}row["error"]=e.what();row["score"]=testScore(Json::array());}rows[slot]=row;
             });for(auto& worker:workers)worker.join();for(auto& row:rows)report["results"].push_back(row);writeJsonAtomic(reportPath,report);
         }
         report["cancelled"]=cancelled();if(!report["cancelled"].get<bool>()){
