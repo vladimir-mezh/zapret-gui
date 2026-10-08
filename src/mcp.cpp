@@ -4,7 +4,7 @@
 #include <io.h>
 #include <memory>
 #ifndef MCP_VERSION
-#define MCP_VERSION "0.3.0"
+#define MCP_VERSION "0.3.1"
 #endif
 class SessionMarker {
     fs::path file;
@@ -61,7 +61,7 @@ Json rpcError(const Json& id,int code,const std::string& message){return {{"json
 class Protocol {
     Store store;SessionMarker session;bool initialized=false,ready=false;
 public:
-    explicit Protocol(fs::path path):store(path),session(fs::absolute(path)){}
+    explicit Protocol(fs::path path):store(path,false),session(fs::absolute(path)){}
     Json handle(const Json& request) {
         Json id=request.is_object()?request.value("id",Json()):Json();
         if(!request.is_object()||request.value("jsonrpc",Json())!="2.0"||!request.contains("method")||!request["method"].is_string()||(!id.is_null()&&!id.is_string()&&!id.is_number_integer()))return rpcError(nullptr,-32600,"Invalid request");

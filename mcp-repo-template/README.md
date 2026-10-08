@@ -1,4 +1,4 @@
-# Zapret GUI MCP · 0.3.0
+# Zapret GUI MCP · 0.3.1
 
 Отдельный необязательный stdio MCP для [Zapret GUI](https://github.com/vladimir-mezh/zapret-gui). Собственные версии и релизы; исходники GUI не нужны для сборки.
 
@@ -20,11 +20,13 @@
 Windows, CMake и MSVC:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 0.3.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 0.3.1
 ```
 
 Приложите к GitHub Release `ZapretMCP.exe`, `ZapretMcpLauncher.exe`, `mcp-manifest.json` и ZIP. Манифест содержит SHA-256 бинарников и лицензию JSON-библиотеки. Каждый изменённый бинарник получает новый номер версии. `api_version: 1` — контракт совместимости с GUI.
 
 Поддерживаются handshake-ревизии MCP от 2024-11-05 до 2025-11-25.
 
-GUI 0.4.0 использует schema 2. MCP 0.3.0 читает schema 1/2 и поддерживает game_mode (disabled/all/tcp/udp), tcp_ports и udp_ports. Старая схема сохраняется в резервную копию перед записью новой. После обновления переподключите клиент, чтобы завершить старый сервер.
+GUI 0.4.0 использует schema 2. MCP 0.3.1 читает schema 1/2 и поддерживает game_mode (disabled/all/tcp/udp), tcp_ports и udp_ports. Старая схема сохраняется в резервную копию перед записью новой. После обновления переподключите клиент, чтобы завершить старый сервер.
+
+MCP 0.3.1 сохраняет schema 1 при обычных изменениях старых полей с режимами all/disabled и стандартными диапазонами, поэтому отдельное обновление MCP не ломает GUI 0.3.0. Расширенные режимы/порты требуют GUI 0.4.0: перед их сохранением выполняется переход на schema 2 с резервной копией. Файл schema 2 никогда не понижается до schema 1.

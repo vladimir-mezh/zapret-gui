@@ -7,6 +7,7 @@ inline fs::path defaultConfig() {
 }
 class Store {
     fs::path path;
+    bool preferSchema2;
     struct Lock {
         HANDLE h=INVALID_HANDLE_VALUE;
         explicit Lock(const fs::path& file) {
@@ -36,14 +37,15 @@ class Store {
         }return s;
     }
     void write(const Snapshot& s) {
-        Json j={{"schema",2},{"revision",s.revision},{"installs",Json::array()},{"profile",profileJson(s.profile)}};
-        if(fs::exists(path)&&read().value("schema",1)==1){auto backup=path;backup+=L".before-schema2";if(!fs::exists(backup)&&!CopyFileW(path.c_str(),backup.c_str(),TRUE))throw std::runtime_error("Cannot backup settings before migration");}
+        auto previous=fs::exists(path)?read().value("schema",1):1;auto mode=gameMode(s.profile);bool extended=(mode!="all"&&mode!="disabled")||s.profile.tcpPorts!="1024-65535"||s.profile.udpPorts!="1024-65535";int schema=preferSchema2||previous==2||extended?2:1;
+        Json j={{"schema",schema},{"revision",s.revision},{"installs",Json::array()},{"profile",profileJson(s.profile)}};
+        if(fs::exists(path)&&previous==1&&schema==2){auto backup=path;backup+=L".before-schema2";if(!fs::exists(backup)&&!CopyFileW(path.c_str(),backup.c_str(),TRUE))throw std::runtime_error("Cannot backup settings before migration");}
         for(const auto& v:s.installs)j["installs"].push_back({{"id",v.id},{"path",utf8(v.path.wstring())}});
         auto temp=path;temp+=L".tmp";{std::ofstream out(temp,std::ios::binary|std::ios::trunc);out<<j.dump(2);out.close();if(!out)throw std::runtime_error("Cannot write settings");}
         if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot commit settings");
     }
 public:
-    explicit Store(fs::path config=defaultConfig()):path(fs::absolute(config)){}
+    explicit Store(fs::path config=defaultConfig(),bool upgrade=true):path(fs::absolute(config)),preferSchema2(upgrade){}
     Snapshot load(){Lock lock(path);return decode(read());}
     uint64_t revision(){Lock lock(path);return read().value("revision",uint64_t{0});}
     Snapshot save(Snapshot s,uint64_t expected) {
