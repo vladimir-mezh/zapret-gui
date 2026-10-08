@@ -35,7 +35,7 @@ class Client:
         result = self.send('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
             'clientInfo': {'name': 'integration-test', 'version': '1'}})
         assert result['result']['protocolVersion'] == '2025-11-25'
-        assert result['result']['serverInfo']['version'] == '0.2.0'
+        assert result['result']['serverInfo']['version'] == '0.3.0'
         self.send('notifications/initialized', notify=True)
         assert self.send('ping')['result'] == {}  # Wait until initialization notification was processed.
     def call(self, name, arguments=None):
@@ -99,6 +99,11 @@ with tempfile.TemporaryDirectory(prefix='mcp-test-', dir=scratch) as temp:
             assert result['structuredContent']['revision'] == 3
             assert client.call('zapret_set_profile', {'changes': {'game_filter': False}, 'expected_revision': 2, 'dry_run': False})['isError'] is True
             assert client.call('zapret_get_state')['structuredContent']['profile']['ipset_mode'] == 'none'
+            extended = client.call('zapret_set_profile', {'changes': {'game_mode': 'udp', 'tcp_ports': '443', 'udp_ports': '27015-27050'}, 'expected_revision': 3, 'dry_run': False})['structuredContent']
+            assert extended['revision'] == 4 and extended['profile']['game_mode'] == 'udp'
+            assert client.call('zapret_get_state')['structuredContent']['profile']['udp_ports'] == '27015-27050'
+            assert json.loads(config.read_text())['schema'] == 2
+            assert client.call('zapret_set_profile', {'changes': {'tcp_ports': '443;calc.exe'}, 'expected_revision': 4})['isError'] is True
         finally:
             second.close()
         assert connections() == 1
@@ -117,11 +122,11 @@ with tempfile.TemporaryDirectory(prefix='mcp-launcher-', dir=scratch) as temp:
     base = Path(temp).resolve()
     assert base.is_relative_to(scratch)
     package = base / 'mcp'
-    version = package / 'versions/0.2.0'
+    version = package / 'versions/0.3.0'
     version.mkdir(parents=True)
     shutil.copyfile(exe, version / 'ZapretMCP.exe')
     shutil.copyfile(root / 'dist/mcp/ZapretMcpLauncher.exe', package / 'ZapretMcpLauncher.exe')
-    (package / 'manager.json').write_text(json.dumps({'active_version': '0.2.0'}))
+    (package / 'manager.json').write_text(json.dumps({'active_version': '0.3.0'}))
     exe = package / 'ZapretMcpLauncher.exe'
     client = Client(base / 'settings.json')
     try:

@@ -23,7 +23,11 @@ inline std::wstring wide(const std::string& s) {
     std::wstring r(n,L'\0'); MultiByteToWideChar(CP_UTF8,0,s.data(),(int)s.size(),r.data(),n); return r;
 }
 struct Install { std::string id; fs::path path; std::vector<std::string> strategies; };
-struct Profile { std::string version, strategy; bool game=false; std::string ipset="loaded"; };
+struct Profile { std::string version, strategy; bool game=false; std::string ipset="loaded",gameMode="",tcpPorts="1024-65535",udpPorts="1024-65535"; };
+inline std::string gameMode(const Profile& p){return p.gameMode.empty()?(p.game?"all":"disabled"):p.gameMode;}
+inline bool validGameMode(const std::string& s){return s=="disabled"||s=="all"||s=="tcp"||s=="udp";}
+inline bool validPorts(const std::string& s){if(s.empty()||s.size()>255)return false;size_t start=0;while(start<s.size()){auto end=s.find(',',start);auto item=s.substr(start,end==std::string::npos?end:end-start);auto dash=item.find('-');auto number=[](const std::string& n){if(n.empty()||n.size()>5||!std::all_of(n.begin(),n.end(),[](unsigned char c){return c>='0'&&c<='9';}))return 0u;auto v=std::stoul(n);return v>=1&&v<=65535?(unsigned)v:0u;};auto first=number(item.substr(0,dash));if(!first)return false;if(dash!=std::string::npos){auto last=number(item.substr(dash+1));if(!last||last<first)return false;}if(end==std::string::npos)return true;start=end+1;}return false;}
+inline Json profileJson(const Profile& p) {return {{"version_id",p.version},{"strategy",p.strategy},{"game_filter",gameMode(p)!="disabled"},{"ipset_mode",p.ipset},{"game_mode",gameMode(p)},{"tcp_ports",p.tcpPorts},{"udp_ports",p.udpPorts}};}
 inline bool validMode(const std::string& s) { return s=="loaded" || s=="none" || s=="any"; }
 inline Install inspect(const fs::path& root) {
     if(!fs::is_regular_file(root/L"bin"/L"winws.exe") || !fs::is_directory(root/L"lists"))
@@ -41,8 +45,8 @@ inline Install inspect(const fs::path& root) {
 inline Json context(const std::vector<Install>& all, const Profile& p) {
     Json versions=Json::array();
     for(const auto& v:all) versions.push_back({{"id",v.id},{"strategies",v.strategies},{"files_available",!v.strategies.empty()}});
-    return {{"app","Zapret GUI"},{"settings_schema",1},{"stage","GUI supports downloads and Windows service management. Profile changes must be applied through GUI to restart the service."},
-        {"available_versions",versions},{"profile",{{"version_id",p.version},{"strategy",p.strategy},{"game_filter",p.game},{"ipset_mode",p.ipset}}}};
+    return {{"app","Zapret GUI"},{"settings_schema",2},{"stage","Profile changes must be applied through GUI to restart the service."},
+        {"available_versions",versions},{"profile",profileJson(p)}};
 }
 inline Profile validateChanges(const Json& changes, const Profile& current, const std::vector<Install>& all) {
     if(!changes.is_object()) throw std::runtime_error("changes must be an object");
@@ -50,11 +54,15 @@ inline Profile validateChanges(const Json& changes, const Profile& current, cons
     for(auto it=changes.begin(); it!=changes.end();++it) {
         if(it.key()=="version_id" && it->is_string()) p.version=it->get<std::string>();
         else if(it.key()=="strategy" && it->is_string()) p.strategy=it->get<std::string>();
-        else if(it.key()=="game_filter" && it->is_boolean()) p.game=it->get<bool>();
+        else if(it.key()=="game_filter" && it->is_boolean()) {p.game=it->get<bool>();if(!changes.contains("game_mode"))p.gameMode=p.game?"all":"disabled";}
+        else if(it.key()=="game_mode" && it->is_string())p.gameMode=it->get<std::string>();
+        else if(it.key()=="tcp_ports" && it->is_string())p.tcpPorts=it->get<std::string>();
+        else if(it.key()=="udp_ports" && it->is_string())p.udpPorts=it->get<std::string>();
         else if(it.key()=="ipset_mode" && it->is_string()) p.ipset=it->get<std::string>();
         else throw std::runtime_error("Unknown action or invalid field type");
     }
     if(!validMode(p.ipset)) throw std::runtime_error("Invalid IPSet mode");
+    if(!validGameMode(gameMode(p))||!validPorts(p.tcpPorts)||!validPorts(p.udpPorts))throw std::runtime_error("Invalid game mode or port range");p.game=gameMode(p)!="disabled";
     if(changes.empty()) return p;
     if(p.version.empty() && p.strategy.empty() && !changes.contains("version_id") && !changes.contains("strategy")) return p;
     auto v=std::find_if(all.begin(),all.end(),[&](const Install& x){return x.id==p.version;});
@@ -62,5 +70,3 @@ inline Profile validateChanges(const Json& changes, const Profile& current, cons
         throw std::runtime_error("Version or strategy is not imported");
     return p;
 }
-
-inline Json profileJson(const Profile& p) { return {{"version_id",p.version},{"strategy",p.strategy},{"game_filter",p.game},{"ipset_mode",p.ipset}}; }

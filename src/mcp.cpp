@@ -4,7 +4,7 @@
 #include <io.h>
 #include <memory>
 #ifndef MCP_VERSION
-#define MCP_VERSION "0.2.0"
+#define MCP_VERSION "0.3.0"
 #endif
 class SessionMarker {
     fs::path file;
@@ -18,7 +18,7 @@ public:
 
 Json tools() {
     Json empty={{"type","object"},{"properties",Json::object()},{"additionalProperties",false}};
-    Json changes={{"type","object"},{"properties",{{"version_id",{{"type","string"}}},{"strategy",{{"type","string"}}},{"game_filter",{{"type","boolean"}}},{"ipset_mode",{{"type","string"},{"enum",{"loaded","none","any"}}}}}},{"additionalProperties",false}};
+    Json changes={{"type","object"},{"properties",{{"version_id",{{"type","string"}}},{"strategy",{{"type","string"}}},{"game_filter",{{"type","boolean"}}},{"game_mode",{{"type","string"},{"enum",{"disabled","all","tcp","udp"}}}},{"tcp_ports",{{"type","string"},{"maxLength",255}}},{"udp_ports",{{"type","string"},{"maxLength",255}}},{"ipset_mode",{{"type","string"},{"enum",{"loaded","none","any"}}}}}},{"additionalProperties",false}};
     Json update={{"type","object"},{"properties",{{"changes",changes},{"expected_revision",{{"type","integer"},{"minimum",0}}},{"dry_run",{{"type","boolean"},{"default",true}}}}},{"required",{"changes","expected_revision"}},{"additionalProperties",false}};
     Json import={{"type","object"},{"properties",{{"path",{{"type","string"},{"description","Absolute path to an existing unpacked Flowseal folder. Files are only read."}}},{"expected_revision",{{"type","integer"},{"minimum",0}}}}},{"required",{"path","expected_revision"}},{"additionalProperties",false}};
     auto tool=[](const char* name,const char* description,const Json& schema,bool readOnly){return Json{{"name",name},{"description",description},{"inputSchema",schema},{"annotations",{{"readOnlyHint",readOnly},{"destructiveHint",false},{"openWorldHint",false}}}};};

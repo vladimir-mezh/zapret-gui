@@ -1,4 +1,4 @@
-param([string]$Compiler = "$PSScriptRoot\.tools\zig-x86_64-windows-0.15.2\zig.exe",[string]$Version='0.2.0')
+param([string]$Compiler = "$PSScriptRoot\.tools\zig-x86_64-windows-0.15.2\zig.exe",[string]$Version='0.3.0')
 $ErrorActionPreference = 'Stop'
 $taskPackage = "$PSScriptRoot\dist\mcp"
 New-Item -ItemType Directory -Force -Path $taskPackage,"$PSScriptRoot\dist\optional" | Out-Null

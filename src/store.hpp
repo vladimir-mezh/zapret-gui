@@ -22,19 +22,22 @@ class Store {
         if(!fs::exists(path))return {{"schema",1},{"revision",0},{"installs",Json::array()},{"profile",profileJson(Profile{})}};
         if(fs::file_size(path)>1024*1024)throw std::runtime_error("Settings file too large");
         std::ifstream input(path,std::ios::binary);Json j;input>>j;
-        if(!j.is_object()||j.value("schema",1)!=1||!j.contains("installs")||!j["installs"].is_array()||!j.contains("profile")||!j["profile"].is_object())throw std::runtime_error("Invalid settings file; original file was preserved");return j;
+        if(!j.is_object()||(j.value("schema",1)!=1&&j.value("schema",1)!=2)||!j.contains("installs")||!j["installs"].is_array()||!j.contains("profile")||!j["profile"].is_object())throw std::runtime_error("Invalid settings file; original file was preserved");return j;
     }
     Snapshot decode(const Json& j) {
         Snapshot s;s.revision=j.value("revision",uint64_t{0});auto p=j.at("profile");
         s.profile={p.value("version_id",""),p.value("strategy",""),p.value("game_filter",false),p.value("ipset_mode","loaded")};
+        s.profile.gameMode=p.value("game_mode",s.profile.game?"all":"disabled");s.profile.tcpPorts=p.value("tcp_ports","1024-65535");s.profile.udpPorts=p.value("udp_ports","1024-65535");s.profile.game=gameMode(s.profile)!="disabled";
         if(!validMode(s.profile.ipset))throw std::runtime_error("Invalid saved IPSet mode");
+        if(!validGameMode(gameMode(s.profile))||!validPorts(s.profile.tcpPorts)||!validPorts(s.profile.udpPorts))throw std::runtime_error("Invalid saved game filter");
         for(const auto& entry:j.at("installs")) {
             auto root=fs::path(wide(entry.at("path").get<std::string>()));Install v;
             try{v=inspect(root);}catch(...){v.path=root;}v.id=entry.at("id").get<std::string>();s.installs.push_back(v);
         }return s;
     }
     void write(const Snapshot& s) {
-        Json j={{"schema",1},{"revision",s.revision},{"installs",Json::array()},{"profile",profileJson(s.profile)}};
+        Json j={{"schema",2},{"revision",s.revision},{"installs",Json::array()},{"profile",profileJson(s.profile)}};
+        if(fs::exists(path)&&read().value("schema",1)==1){auto backup=path;backup+=L".before-schema2";if(!fs::exists(backup)&&!CopyFileW(path.c_str(),backup.c_str(),TRUE))throw std::runtime_error("Cannot backup settings before migration");}
         for(const auto& v:s.installs)j["installs"].push_back({{"id",v.id},{"path",utf8(v.path.wstring())}});
         auto temp=path;temp+=L".tmp";{std::ofstream out(temp,std::ios::binary|std::ios::trunc);out<<j.dump(2);out.close();if(!out)throw std::runtime_error("Cannot write settings");}
         if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot commit settings");

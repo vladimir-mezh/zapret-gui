@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ZapretGUI VERSION 0.3.0 LANGUAGES CXX)
+project(ZapretGUI VERSION 0.4.0 LANGUAGES CXX)
 add_executable(ZapretGUI WIN32 src/main.cpp)
 target_compile_features(ZapretGUI PRIVATE cxx_std_17)
 target_compile_definitions(ZapretGUI PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX GUI_VERSION="${PROJECT_VERSION}")

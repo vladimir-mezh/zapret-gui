@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ZapretMCP VERSION 0.2.0 LANGUAGES CXX)
+project(ZapretMCP VERSION 0.3.0 LANGUAGES CXX)
 set(MCP_RELEASE_VERSION "${PROJECT_VERSION}" CACHE STRING "Independent MCP release version")
 if(NOT MCP_RELEASE_VERSION MATCHES "^[0-9][A-Za-z0-9._-]*$")
   message(FATAL_ERROR "Invalid MCP release version")

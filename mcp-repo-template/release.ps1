@@ -1,4 +1,4 @@
-param([string]$Version='0.2.0')
+param([string]$Version='0.3.0')
 $ErrorActionPreference='Stop'
 if ($Version -notmatch '^[0-9][A-Za-z0-9._-]{0,63}$') {throw 'Invalid release version'}
 cmake -S $PSScriptRoot -B "$PSScriptRoot\build" "-DMCP_RELEASE_VERSION=$Version"
