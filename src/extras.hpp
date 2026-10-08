@@ -1,5 +1,6 @@
 #pragma once
 #include "maintenance.hpp"
+inline std::wstring editLines(const std::wstring& text){std::wstring out;for(size_t i=0;i<text.size();i++){if(text[i]=='\n'&&(i==0||text[i-1]!='\r'))out+='\r';out+=text[i];}return out;}
 inline void replaceBytes(const fs::path& file,const std::string& bytes){auto temp=fs::path(file.wstring()+L".tmp");writeBytes(temp,bytes);if(!MoveFileExW(temp.c_str(),file.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Не удалось сохранить файл. Исходный файл сохранён.");}
 inline bool validAddress(const std::string& text){using Parse=int(WINAPI*)(int,const wchar_t*,void*);static HMODULE library=LoadLibraryExW(L"ws2_32.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);auto parse=library?(Parse)GetProcAddress(library,"InetPtonW"):nullptr;unsigned char address[16];return parse&&(parse(2,wide(text).c_str(),address)==1||parse(23,wide(text).c_str(),address)==1);}
 inline bool validDomain(const std::string& s){return !s.empty()&&s.size()<=253&&s.front()!='.'&&s.back()!='.'&&s.find("..") == std::string::npos&&std::all_of(s.begin(),s.end(),[](unsigned char c){return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='.';});}
