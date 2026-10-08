@@ -106,6 +106,7 @@ public:
 };
 
 struct ServiceState {bool installed=false,running=false,owned=false;std::wstring binary;};
+struct EngineOperation {HANDLE handle=nullptr;EngineOperation(){handle=CreateMutexW(nullptr,FALSE,L"Global\\ZapretGUIEngineOperation");if(!handle)throw std::runtime_error("Не удалось открыть управление обходом.");auto wait=WaitForSingleObject(handle,0);if(wait!=WAIT_OBJECT_0&&wait!=WAIT_ABANDONED){CloseHandle(handle);handle=nullptr;throw std::runtime_error("Другая операция с обходом ещё выполняется.");}}~EngineOperation(){if(handle){ReleaseMutex(handle);CloseHandle(handle);}}};
 inline ServiceState serviceState(){ServiceState s;auto scm=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT);if(!scm)return s;auto service=OpenServiceW(scm,L"zapret",SERVICE_QUERY_STATUS|SERVICE_QUERY_CONFIG);CloseServiceHandle(scm);if(!service)return s;s.installed=true;SERVICE_STATUS_PROCESS status{};DWORD needed=0;if(QueryServiceStatusEx(service,SC_STATUS_PROCESS_INFO,(BYTE*)&status,sizeof(status),&needed))s.running=status.dwCurrentState==SERVICE_RUNNING;
     QueryServiceConfigW(service,nullptr,0,&needed);std::vector<BYTE> config(needed);if(needed&&QueryServiceConfigW(service,(QUERY_SERVICE_CONFIGW*)config.data(),needed,&needed))s.binary=((QUERY_SERVICE_CONFIGW*)config.data())->lpBinaryPathName;CloseServiceHandle(service);
     HKEY key=nullptr;if(RegOpenKeyExW(HKEY_LOCAL_MACHINE,L"SYSTEM\\CurrentControlSet\\Services\\zapret",0,KEY_READ,&key)==ERROR_SUCCESS){DWORD owner=0,size=sizeof(owner),type=0;if(RegQueryValueExW(key,L"ZapretGUIOwner",nullptr,&type,(BYTE*)&owner,&size)==ERROR_SUCCESS&&type==REG_DWORD&&owner==1)s.owned=true;RegCloseKey(key);}return s;
@@ -113,6 +114,7 @@ inline ServiceState serviceState(){ServiceState s;auto scm=OpenSCManagerW(nullpt
 inline fs::path serviceFolder(){PWSTR path=nullptr;if(FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles,0,nullptr,&path)))throw std::runtime_error("Program Files unavailable");fs::path p=fs::path(path)/L"ZapretGUI"/L"engine";CoTaskMemFree(path);return p;}
 inline void stopService(SC_HANDLE service){SERVICE_STATUS status{};if(!ControlService(service,SERVICE_CONTROL_STOP,&status)&&GetLastError()!=ERROR_SERVICE_NOT_ACTIVE)throw std::runtime_error("Не удалось остановить службу.");auto end=GetTickCount64()+20000;do{if(!QueryServiceStatus(service,&status))throw std::runtime_error("Не удалось проверить службу.");if(status.dwCurrentState==SERVICE_STOPPED)return;Sleep(200);}while(GetTickCount64()<end);throw std::runtime_error("Служба не остановилась. Версия сохранена.");}
 inline void serviceAction(const std::string& action,const fs::path& config){
+    EngineOperation operation;
     auto before=serviceState();if(before.installed&&!before.owned)throw std::runtime_error("Уже есть служба Zapret, установленная другой программой. Удалите её через прежний менеджер.");
     auto scm=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_ALL_ACCESS);if(!scm)throw std::runtime_error("Windows не предоставила права администратора.");struct Cleanup{SC_HANDLE h;~Cleanup(){if(h)CloseServiceHandle(h);}}scmCleanup{scm};
     SC_HANDLE service=before.installed?OpenServiceW(scm,L"zapret",SERVICE_ALL_ACCESS):nullptr;Cleanup cleanup{service};
@@ -126,7 +128,7 @@ inline void serviceAction(const std::string& action,const fs::path& config){
     struct RestoreService {SC_HANDLE& service;const ServiceState& before;bool armed=false,committed=false;~RestoreService(){if(!armed||committed||!service)return;try{stopService(service);}catch(...){}if(before.installed&&!before.binary.empty()){if(ChangeServiceConfigW(service,SERVICE_NO_CHANGE,SERVICE_NO_CHANGE,SERVICE_NO_CHANGE,before.binary.c_str(),nullptr,nullptr,nullptr,nullptr,nullptr,nullptr)&&before.running)StartServiceW(service,0,nullptr);}else DeleteService(service);}}restore{service,before};
     if(service)stopService(service);restore.armed=true;
     if(!fs::exists(destination)){fs::copy(selected->path,destination,fs::copy_options::recursive);}
-    else{fs::copy(selected->path/L"lists",destination/L"lists",fs::copy_options::recursive|fs::copy_options::overwrite_existing);}
+    else{fs::copy(selected->path/L"lists",destination/L"lists",fs::copy_options::recursive|fs::copy_options::overwrite_existing);for(auto name:{L"ACTIVE_DISCORD_UDP.bin",L"ACTIVE_GAME_UDP.bin"})if(fs::exists(selected->path/L"bin"/name))fs::copy_file(selected->path/L"bin"/name,destination/L"bin"/name,fs::copy_options::overwrite_existing);}
     prepareLists(destination,state.profile);
     auto binary=quoteArg((destination/L"bin"/L"winws.exe").wstring())+L" "+wide(args);
     if(service){if(!ChangeServiceConfigW(service,SERVICE_NO_CHANGE,SERVICE_AUTO_START,SERVICE_NO_CHANGE,binary.c_str(),nullptr,nullptr,nullptr,nullptr,nullptr,L"Zapret GUI"))throw std::runtime_error("Не удалось обновить службу.");}

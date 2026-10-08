@@ -1,5 +1,6 @@
 #include "client_setup.hpp"
 #include "app_install.hpp"
+#include "maintenance.hpp"
 #include <functional>
 #include <thread>
 #include <atomic>
@@ -10,10 +11,11 @@
 constexpr COLORREF BG=RGB(245,247,246), PANEL=RGB(255,255,255), INK=RGB(29,42,37), MUTED=RGB(104,119,111), GREEN=RGB(28,100,72), LINE=RGB(222,230,225), SIDE=RGB(23,39,32);
 enum { NAV=100, VERSION=200, STRATEGY, IMPORT, RELEASES, START, AUTOSTART, GAME, IPSET, SAVE, FORGET, TRANSCRIPT, COPY, DIAG, MCP_DOWNLOAD };
 enum { MCP_REPO=402,MCP_REPO_SAVE,MCP_LOCAL,MCP_CONFIG };
-enum Page {HOME_PAGE,VERSIONS_PAGE,TELEGRAM_PAGE,SETTINGS_PAGE,MCP_PAGE,DIAGNOSTICS_PAGE};
-constexpr int NAV_COUNT=6;
+enum Page {HOME_PAGE,VERSIONS_PAGE,TELEGRAM_PAGE,TESTS_PAGE,SETTINGS_PAGE,MCP_PAGE,DIAGNOSTICS_PAGE};
+constexpr int NAV_COUNT=7;
 enum {DOWNLOAD_LATEST=500,RELEASE_PICK,LOAD_RELEASES,DOWNLOAD_PICKED,DELETE_VERSION,TG_INSTALL,TG_CONNECT,MCP_CLIENT,MCP_CONNECT,SERVICE_REMOVE,GUI_UPDATE,IPSET_UPDATE};
-struct JobResult {std::wstring message;bool start=false,telegram=false,client=false;int clientId=0;std::vector<std::string> releases;};
+enum {TEST_CURRENT=600,TEST_SELECTED,TEST_ALL,TEST_CANCEL,TEST_PICK,TEST_EXPORT,FAKE_PICK,FAKE_DISCORD,FAKE_GAME,DISCORD_CACHE,USER_DOMAINS,USER_EXCLUDES,TEST_PARALLEL};
+struct JobResult {std::wstring message;bool start=false,telegram=false,client=false;int clientId=0;std::vector<std::string> releases;Json report;};
 LRESULT CALLBACK buttonProc(HWND h,UINT msg,WPARAM w,LPARAM l) {
     auto original=(WNDPROC)GetPropW(h,L"ZapretButtonProc");
     bool hovered=GetPropW(h,L"ZapretButtonHover")!=nullptr;
@@ -34,29 +36,31 @@ struct Control { HWND h; int x,y,w,hgt; bool stretch=false,bottom=false,grow=fal
 class App {
 public:
     HWND window=nullptr; HINSTANCE instance=nullptr; int page=0; float scale=1; int width=1120,height=760;
-    HFONT font=nullptr,bold=nullptr,title=nullptr,small=nullptr; HBRUSH bgBrush=CreateSolidBrush(BG),panelBrush=CreateSolidBrush(PANEL),sideBrush=CreateSolidBrush(SIDE);
+    HFONT font=nullptr,bold=nullptr,title=nullptr,smallFont=nullptr; HBRUSH bgBrush=CreateSolidBrush(BG),panelBrush=CreateSolidBrush(PANEL),sideBrush=CreateSolidBrush(SIDE);
     std::vector<Control> controls; std::vector<HWND> nav; std::vector<Install> installs; Profile profile;
     Store store; uint64_t revision=0;
     Backend backend;ServiceState engine;std::vector<std::string> remoteReleases;
     McpManager mcp;int clientCount=0;bool mcpBusy=false;std::string repoDraft;
     std::thread mcpWorker;std::atomic<bool> closing=false;
+    std::atomic<bool> cancelTests=false;bool testBusy=false,strategyTesting=false,testParallel=true;Json testReport;std::wstring reportText;
     std::wstring notice=L"Готово к настройке";
-    ~App(){ closing=true;if(mcpWorker.joinable())mcpWorker.join();for(auto f:{font,bold,title,small}) DeleteObject(f); DeleteObject(bgBrush);DeleteObject(panelBrush);DeleteObject(sideBrush); }
+    ~App(){ closing=true;if(mcpWorker.joinable())mcpWorker.join();for(auto f:{font,bold,title,smallFont}) DeleteObject(f); DeleteObject(bgBrush);DeleteObject(panelBrush);DeleteObject(sideBrush); }
     int px(int v) const {return (int)(v*scale);}
     HWND control(int id) {for(auto& c:controls) if(GetDlgCtrlID(c.h)==id) return c.h; return nullptr;}
     std::wstring text(int id) {HWND h=control(id);int n=GetWindowTextLengthW(h);std::wstring s(n+1,L'\0');GetWindowTextW(h,s.data(),n+1);s.resize(n);return s;}
     void setText(int id,const std::wstring& s) {if(auto h=control(id)) SetWindowTextW(h,s.c_str());}
-    void fonts() {for(auto f:{font,bold,title,small}) if(f) DeleteObject(f);
+    void fonts() {for(auto f:{font,bold,title,smallFont}) if(f) DeleteObject(f);
         auto make=[&](int size,int weight){return CreateFontW(-px(size),0,0,0,weight,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");};
-        font=make(15,FW_NORMAL);bold=make(15,FW_SEMIBOLD);title=make(30,FW_SEMIBOLD);small=make(13,FW_NORMAL);
+        font=make(15,FW_NORMAL);bold=make(15,FW_SEMIBOLD);title=make(30,FW_SEMIBOLD);smallFont=make(13,FW_NORMAL);
     }
     void reload() { auto state=store.load();installs=state.installs;profile=state.profile;revision=state.revision; }
-    void init() { reload();repoDraft=mcp.repository();engine=serviceState();fonts();mount();SetTimer(window,1,1000,nullptr); }
+    void init() { reload();repoDraft=mcp.repository();engine=serviceState();try{auto file=defaultConfig().parent_path()/L"test-report.json";if(fs::exists(file))testReport=Json::parse(fileBytes(file,2*1024*1024));}catch(...){}fonts();mount();SetTimer(window,1,1000,nullptr); }
     void save() {
         try { auto state=store.save({installs,profile,revision},revision);revision=state.revision; }
         catch(...) { reload();mount();throw; }
     }
     void poll() {
+        if(strategyTesting)try{auto file=defaultConfig().parent_path()/L"test-report.json";if(fs::exists(file)){auto next=Json::parse(fileBytes(file,2*1024*1024));auto nextText=testReportText(next);testReport=next;if(nextText!=reportText){reportText=nextText;notice=wide(next.value("message",""));if(page==TESTS_PAGE)setText(TRANSCRIPT,reportText);InvalidateRect(window,nullptr,FALSE);}}}catch(...){}
         try { if(store.revision()!=revision) { reload();notice=L"Настройки обновлены извне";mount(); } }
         catch(...) { notice=L"Не удалось прочитать настройки. Исходный файл сохранён."; }
         try{int next=mcp.connections();if(next!=clientCount){clientCount=next;InvalidateRect(window,nullptr,FALSE);}}catch(...){}
@@ -84,7 +88,7 @@ public:
         if(installs.empty()) item(versions,"Нет импортированных версий");comboSelect(versions,current);
         index=0;current=0;if(auto v=selected()) for(auto& s:v->strategies){item(strategy,s);if(s==profile.strategy)current=index;index++;}
         else item(strategy,"Сначала добавьте версию");comboSelect(strategy,current);
-        EnableWindow(versions,!installs.empty());EnableWindow(strategy,!installs.empty());
+        EnableWindow(versions,!mcpBusy&&!installs.empty());EnableWindow(strategy,!mcpBusy&&!installs.empty());
     }
     void mount() {
         if(control(MCP_REPO))repoDraft=utf8(text(MCP_REPO));
@@ -97,7 +101,7 @@ public:
         controls.erase(std::remove_if(controls.begin(),controls.end(),[](const Control& c){
             int id=GetDlgCtrlID(c.h);if(id>=NAV&&id<NAV+NAV_COUNT)return false;DestroyWindow(c.h);return true;
         }),controls.end());
-        const wchar_t* labels[]={L"Главная",L"Версии",L"Telegram",L"Настройки",L"MCP",L"Диагностика"};
+        const wchar_t* labels[]={L"Главная",L"Версии",L"Telegram",L"Тесты",L"Настройки",L"MCP",L"Диагностика"};
         static_assert(sizeof(labels)/sizeof(labels[0])==NAV_COUNT);
         if(nav.empty())for(int i=0;i<NAV_COUNT;i++)nav.push_back(button(NAV+i,labels[i],20,143+i*54,192,44));
         for(auto h:nav)SendMessageW(h,WM_SETFONT,(WPARAM)font,FALSE);
@@ -119,11 +123,24 @@ public:
         } else if(page==TELEGRAM_PAGE) {
             button(TG_INSTALL,mcpBusy?L"Устанавливаем…":L"Установить и подключить",286,306,270);button(TG_CONNECT,L"Подключить Telegram",286,370,270);
             EnableWindow(control(TG_INSTALL),!mcpBusy);EnableWindow(control(TG_CONNECT),!mcpBusy&&!backend.tgState().empty());
+        } else if(page==TESTS_PAGE) {
+            button(TEST_CURRENT,L"Проверить доступность",286,158,238);button(TEST_SELECTED,L"Тест выбранной",538,158,200);button(TEST_ALL,L"Подобрать стратегию",752,158,232);
+            EnableWindow(control(TEST_CURRENT),!mcpBusy);for(auto id:{TEST_SELECTED,TEST_ALL})EnableWindow(control(id),!mcpBusy&&!installs.empty()&&(!engine.installed||engine.owned));
+            auto parallel=combo(TEST_PARALLEL,538,210,446);item(parallel,"По одной стратегии");item(parallel,"По 3 одновременно (экспериментально)");comboSelect(parallel,testParallel?1:0);EnableWindow(parallel,!mcpBusy);
+            reportText=testReportText(testReport);add(TRANSCRIPT,L"EDIT",reportText,286,254,315,290,ES_MULTILINE|ES_READONLY|WS_VSCROLL,true);
+            button(TEST_CANCEL,L"Остановить тесты",286,558,210);EnableWindow(control(TEST_CANCEL),testBusy);
+            button(TEST_PICK,L"Выбрать рекомендацию",510,558,250);EnableWindow(control(TEST_PICK),!mcpBusy&&testReport.value("done",false)&&!testReport.value("cancelled",false)&&testReport.contains("best")&&testReport["best"].is_string());
+            button(TEST_EXPORT,L"Сохранить отчёт",286,618,210);EnableWindow(control(TEST_EXPORT),!testReport.empty()&&!mcpBusy);
         } else if(page==SETTINGS_PAGE) {
             button(GAME,profile.game?L"Game Filter: включён":L"Game Filter: выключен",286,212,315,46,true);
             auto ip=combo(IPSET,286,320,315,true);for(auto s:{"loaded","none","any"})item(ip,s);comboSelect(ip,profile.ipset=="loaded"?0:profile.ipset=="none"?1:2);
             button(SAVE,L"Сохранить профиль",286,414,220);
             button(IPSET_UPDATE,L"Обновить список IP",286,614,230);EnableWindow(control(IPSET_UPDATE),!mcpBusy&&!installs.empty());
+            button(USER_DOMAINS,L"Мои сайты",286,472,180);button(USER_EXCLUDES,L"Исключения",480,472,180);
+            auto fake=combo(FAKE_PICK,286,540,315,true);if(auto v=selected())for(auto& f:fakeFiles(*v))item(fake,f);comboSelect(fake,0);
+            button(FAKE_DISCORD,L"Для Discord UDP",536,614,210);button(FAKE_GAME,L"Для игр UDP",760,614,210);
+            for(auto id:{FAKE_PICK,FAKE_DISCORD,FAKE_GAME,USER_DOMAINS,USER_EXCLUDES})EnableWindow(control(id),!mcpBusy&&!installs.empty());
+            for(auto id:{GAME,IPSET,SAVE})EnableWindow(control(id),!mcpBusy);
         } else if(page==MCP_PAGE) {
                 auto client=combo(MCP_CLIENT,286,324,315,true);for(auto name:{"Codex","Claude Desktop","Claude Code"})item(client,name);comboSelect(client,0);
                 button(MCP_CONNECT,mcpBusy?L"Настраиваем…":L"Подключить выбранный ИИ",286,372,280);EnableWindow(control(MCP_CONNECT),!mcpBusy);
@@ -134,7 +151,9 @@ public:
             add(TRANSCRIPT,L"EDIT",diagnostics(),286,194,315,340,ES_MULTILINE|ES_READONLY|WS_VSCROLL,true);
             button(DIAG,L"Проверить файлы",286,558,200);button(COPY,L"Копировать контекст",500,558,220);
             button(GUI_UPDATE,L"Обновить приложение",286,620,240);EnableWindow(control(GUI_UPDATE),!mcpBusy);
+            button(DISCORD_CACHE,L"Очистить кэш Discord",542,620,240);EnableWindow(control(DISCORD_CACHE),!mcpBusy);
         }
+        for(auto id:{IMPORT,FORGET})if(control(id))EnableWindow(control(id),!mcpBusy&&(id!=FORGET||!installs.empty()));
         layout();
     }
     void layout() {
@@ -155,45 +174,49 @@ public:
     void paint(HDC dc) {
         RECT r;GetClientRect(window,&r);FillRect(dc,&r,bgBrush);rect(dc,0,0,232,height,SIDE,0);
         rect(dc,22,29,38,38,RGB(192,232,186),12);label(dc,L"Z",30,30,30,38,SIDE,title);
-        label(dc,L"zapret",72,29,145,38,RGB(241,249,242),title);label(dc,L"Легко управлять",24,86,188,25,RGB(161,185,170),small);
-        label(dc,L"GUI "+wide(GUI_VERSION),24,height-65,190,22,RGB(161,185,170),small);
-        label(dc,L"Flowseal / Windows",24,height-42,190,22,RGB(161,185,170),small);
-        const wchar_t* titles[]={L"Ваш обход",L"Версии Zapret",L"Telegram",L"Настройки профиля",L"Подключение ИИ через MCP",L"Диагностика"};
-        const wchar_t* subtitles[]={L"Версия, стратегия и управление — в одном месте.",L"Рабочая версия всегда остаётся под рукой.",L"Локальный прокси Flowseal для Telegram Desktop.",L"Параметры сохраняются отдельно от версий.",L"Необязательное подключение вашего ИИ-клиента.",L"Проверка доступности импортированных файлов."};
+        label(dc,L"zapret",72,29,145,38,RGB(241,249,242),title);label(dc,L"Легко управлять",24,86,188,25,RGB(161,185,170),smallFont);
+        label(dc,L"GUI "+wide(GUI_VERSION),24,height-65,190,22,RGB(161,185,170),smallFont);
+        label(dc,L"Flowseal / Windows",24,height-42,190,22,RGB(161,185,170),smallFont);
+        const wchar_t* titles[]={L"Ваш обход",L"Версии Zapret",L"Telegram",L"Проверка обхода",L"Настройки профиля",L"Подключение ИИ через MCP",L"Диагностика"};
+        const wchar_t* subtitles[]={L"Версия, стратегия и управление — в одном месте.",L"Рабочая версия всегда остаётся под рукой.",L"Локальный прокси Flowseal для Telegram Desktop.",L"Проверка сайтов и сравнение стратегий вашей версии.",L"Параметры сохраняются отдельно от версий.",L"Необязательное подключение вашего ИИ-клиента.",L"Проверка файлов, служб и возможных конфликтов."};
         static_assert(sizeof(titles)/sizeof(titles[0])==NAV_COUNT&&sizeof(subtitles)/sizeof(subtitles[0])==NAV_COUNT);
         label(dc,titles[page],274,33,width-330,43,INK,title);label(dc,subtitles[page],276,89,width-332,28,MUTED);
         if(page==HOME_PAGE) {
             rect(dc,274,142,width-318,106,PANEL);rect(dc,294,168,9,9,RGB(170,185,177),9);
             label(dc,engine.installed&&!engine.owned?L"Zapret установлен другим менеджером":engine.running?L"Обход включён":L"Обход выключен",315,161,width-375,28,INK,bold);
-            label(dc,engine.installed&&!engine.owned?L"Чтобы перейти на GUI, удалите службу через прежний менеджер Zapret.":L"Нажмите «Включить». Файлы и служба устанавливаются автоматически.",294,202,width-355,30,MUTED,small);
-            rect(dc,274,267,width-318,246,PANEL);label(dc,L"Версия Zapret",286,285,300,24,MUTED,small);
-            label(dc,L"Стратегия обхода",286,367,300,24,MUTED,small);
+            label(dc,engine.installed&&!engine.owned?L"Чтобы перейти на GUI, удалите службу через прежний менеджер Zapret.":L"Нажмите «Включить». Файлы и служба устанавливаются автоматически.",294,202,width-355,30,MUTED,smallFont);
+            rect(dc,274,267,width-318,246,PANEL);label(dc,L"Версия Zapret",286,285,300,24,MUTED,smallFont);
+            label(dc,L"Стратегия обхода",286,367,300,24,MUTED,smallFont);
             rect(dc,274,533,width-318,110,PANEL);label(dc,L"Работа в фоне",286,546,300,24,INK,bold);
-            label(dc,L"Служба работает после закрытия GUI и запускается с Windows.",286,624,width-350,40,MUTED,small);
+            label(dc,L"Служба работает после закрытия GUI и запускается с Windows.",286,624,width-350,40,MUTED,smallFont);
         } else if(page==VERSIONS_PAGE) {
             rect(dc,274,142,width-318,482,PANEL);label(dc,L"Установленные версии",286,161,400,24,INK,bold);
             if(installs.empty())label(dc,L"Список пуст. Нажмите «Установить последнюю».",300,214,width-370,60,MUTED);
-            label(dc,L"Источник: Flowseal. При обновлении старые версии и ваши списки сохраняются.",286,654,width-342,54,MUTED,small);
+            label(dc,L"Источник: Flowseal. При обновлении старые версии и ваши списки сохраняются.",286,654,width-342,54,MUTED,smallFont);
         } else if(page==TELEGRAM_PAGE) {
             rect(dc,274,142,width-318,126,PANEL);auto tg=backend.tgState();label(dc,tg.empty()?L"Telegram-прокси не установлен":L"Telegram-прокси установлен · "+wide(tg.value("version","")),286,166,width-350,28,INK,bold);
-            label(dc,L"Официальный TG WS Proxy от Flowseal. Настройки создаются автоматически.",286,214,width-350,44,MUTED,small);
+            label(dc,L"Официальный TG WS Proxy от Flowseal. Настройки создаются автоматически.",286,214,width-350,44,MUTED,smallFont);
             label(dc,L"После установки Telegram предложит включить локальный прокси. Подтвердите подключение в Telegram.",286,446,width-350,80,MUTED);
+        } else if(page==TESTS_PAGE) {
+            rect(dc,274,246,width-318,304,PANEL);label(dc,L"Скорость подбора",286,212,240,24,MUTED,smallFont);
+            label(dc,L"Подбор временно приостанавливает службу GUI и возвращает её после тестов. TLS/HTTP не проверяет голос Discord, видео и QUIC. VPN может влиять на результаты.",286,674,width-350,55,MUTED,smallFont);
         } else if(page==SETTINGS_PAGE) {
-            rect(dc,274,142,width-318,356,PANEL);label(dc,L"Игры и UDP",286,169,width-350,25,INK,bold);
+            rect(dc,274,142,width-318,516,PANEL);label(dc,L"Игры и UDP",286,169,width-350,25,INK,bold);
             label(dc,L"IPSet Filter",286,282,width-350,25,INK,bold);
-            label(dc,L"loaded — список IP · none — без IPSet · any — любые адреса",286,370,width-350,30,MUTED,small);
-            label(dc,L"После изменения настроек нажмите «Применить настройки» на главной странице.",286,524,width-350,70,MUTED);
+            label(dc,L"loaded — список IP · none — без IPSet · any — любые адреса",286,370,width-350,30,MUTED,smallFont);
+            label(dc,L"Активные фейки UDP: выберите файл и назначьте его ниже",286,518,width-350,22,MUTED,smallFont);
+            label(dc,L"После изменения настроек, списков и фейков нажмите «Применить настройки» на главной странице.",286,682,width-350,42,MUTED,smallFont);
         } else if(page==MCP_PAGE) {
                 rect(dc,274,142,width-318,120,PANEL);
                 label(dc,mcp.installed()?L"MCP установлен · версия "+wide(mcp.version()):L"MCP не установлен",286,164,width-350,28,INK,bold);
                 label(dc,clientCount?L"Подключённых ИИ-клиентов: "+std::to_wstring(clientCount):L"ИИ-клиент не подключён",286,212,width-350,28,MUTED);
-                label(dc,L"Выберите свой ИИ-клиент",286,286,width-350,26,MUTED,small);
-                label(dc,L"MCP устанавливается и добавляется в настройки клиента автоматически. Перезапустите ИИ-клиент после подключения.",286,578,width-350,70,MUTED,small);
+                label(dc,L"Выберите свой ИИ-клиент",286,286,width-350,26,MUTED,smallFont);
+                label(dc,L"MCP устанавливается и добавляется в настройки клиента автоматически. Перезапустите ИИ-клиент после подключения.",286,578,width-350,70,MUTED,smallFont);
         } else if(page==DIAGNOSTICS_PAGE) {
             rect(dc,274,142,width-318,478,PANEL);label(dc,L"Локальная проверка",286,161,width-350,24,INK,bold);
-            label(dc,L"Проверка файлов и службы. Автоматический подбор стратегии добавим далее.",286,682,width-350,36,MUTED,small);
+            label(dc,L"Кэш Discord переносится в резервные папки. Обнаруженные сетевые программы могут влиять на тесты.",286,682,width-350,36,MUTED,smallFont);
         }
-        label(dc,notice,276,height-43,width-332,25,MUTED,small);
+        label(dc,notice,276,height-43,width-332,25,MUTED,smallFont);
     }
     void drawButton(DRAWITEMSTRUCT* d) {
         HDC destination=d->hDC;
@@ -225,6 +248,7 @@ public:
     }
     std::wstring diagnostics() {
         std::wstring r=L"Zapret GUI "+wide(GUI_VERSION)+L"\r\n\r\n";r+=engine.running?L"Служба Zapret запущена.\r\n":engine.installed?L"Служба Zapret остановлена.\r\n":L"Служба Zapret не установлена.\r\n";
+        if(engine.installed&&!engine.owned)r+=L"Служба управляется другой программой. GUI её не меняет.\r\n";r+=L"\r\n"+systemDiagnostics();
         if(installs.empty())return r+L"\r\nНет импортированных установок.\r\n";
         for(const auto& v:installs) {
             bool ok=fs::is_regular_file(v.path/L"bin"/L"winws.exe")&&fs::is_directory(v.path/L"lists");
@@ -255,18 +279,30 @@ public:
         notice=L"Состояние приложения скопировано";InvalidateRect(window,nullptr,FALSE);
     }
     void installMcp(bool local);
+    void runTests(bool strategies,bool all);
+    void exportTests(){IFileSaveDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileSaveDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog))))throw std::runtime_error("Не удалось открыть сохранение отчёта.");dialog->SetFileName(L"zapret-tests.json");dialog->SetDefaultExtension(L"json");if(SUCCEEDED(dialog->Show(window))){IShellItem* item=nullptr;if(SUCCEEDED(dialog->GetResult(&item))){PWSTR p=nullptr;if(SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&p))){writeBytes(fs::path(p),testReport.dump(2));CoTaskMemFree(p);notice=L"Отчёт сохранён";}item->Release();}}dialog->Release();InvalidateRect(window,nullptr,FALSE);}
     void job(std::function<JobResult()> work);
     void engineAction(const std::string& action);
     void installVersion(const std::string& tag,bool start);
-    void finishMcp(JobResult* result){std::unique_ptr<JobResult> value(result);if(mcpWorker.joinable())mcpWorker.join();mcpBusy=false;notice=value->message;if(!value->releases.empty())remoteReleases=value->releases;reload();engine=serviceState();mount();if(value->start)engineAction("install");if(value->telegram){backend.launchTelegram();backend.connectTelegram();}if(value->client){configureClient(value->clientId,mcp.connectionExecutable());notice=L"ИИ подключён. Перезапустите выбранный ИИ-клиент.";InvalidateRect(window,nullptr,FALSE);}}
+    void finishMcp(JobResult* result){std::unique_ptr<JobResult> value(result);if(mcpWorker.joinable())mcpWorker.join();mcpBusy=false;testBusy=false;strategyTesting=false;notice=value->message;if(!value->report.is_null())testReport=value->report;if(!value->releases.empty())remoteReleases=value->releases;reload();engine=serviceState();mount();if(value->start)engineAction("install");if(value->telegram){backend.launchTelegram();backend.connectTelegram();}if(value->client){configureClient(value->clientId,mcp.connectionExecutable());notice=L"ИИ подключён. Перезапустите выбранный ИИ-клиент.";InvalidateRect(window,nullptr,FALSE);}}
     void action(int id,int code) {
         if(id>=NAV&&id<NAV+NAV_COUNT){int next=id-NAV;if(next!=page){page=next;mount();}return;}
         if(id==VERSION&&code==CBN_SELCHANGE&&page==HOME_PAGE){int i=(int)SendMessageW(control(VERSION),CB_GETCURSEL,0,0);if(i>=0&&i<(int)installs.size()){profile.version=installs[i].id;normalize();choices();save();}return;}
         if(id==VERSION&&code==LBN_SELCHANGE&&page==VERSIONS_PAGE){int i=(int)SendMessageW(control(VERSION),LB_GETCURSEL,0,0);if(i>=0&&i<(int)installs.size()){profile.version=installs[i].id;normalize();save();notice=L"Выбрана версия "+wide(profile.version);InvalidateRect(window,nullptr,FALSE);}return;}
         if(id==STRATEGY&&code==CBN_SELCHANGE){if(auto v=selected()){int i=(int)SendMessageW(control(STRATEGY),CB_GETCURSEL,0,0);if(i>=0&&i<(int)v->strategies.size()){profile.strategy=v->strategies[i];save();}}return;}
         if(id==IPSET&&code==CBN_SELCHANGE){int i=(int)SendMessageW(control(IPSET),CB_GETCURSEL,0,0);profile.ipset=i==0?"loaded":i==1?"none":"any";save();return;}
+        if(id==TEST_PARALLEL&&code==CBN_SELCHANGE){testParallel=SendMessageW(control(TEST_PARALLEL),CB_GETCURSEL,0,0)==1;return;}
         if(code!=BN_CLICKED)return;
         switch(id) {
+            case TEST_CURRENT:runTests(false,false);break;
+            case TEST_SELECTED:runTests(true,false);break;
+            case TEST_ALL:runTests(true,true);break;
+            case TEST_CANCEL:cancelTests=true;if(strategyTesting)writeBytes(defaultConfig().parent_path()/L"test-cancel.flag","");notice=L"Останавливаем тесты и возвращаем прежний обход…";InvalidateRect(window,nullptr,FALSE);break;
+            case TEST_PICK:if(!testReport.contains("best")||!testReport["best"].is_string())break;if(testReport.value("revision",uint64_t{0})!=revision||testReport.value("version","")!=profile.version)throw std::runtime_error("Профиль изменился после теста. Повторите тест для текущих настроек.");profile=validateChanges({{"strategy",testReport["best"]}},profile,installs);save();notice=L"Рекомендация выбрана. Нажмите «Применить настройки» на главной.";mount();break;
+            case TEST_EXPORT:exportTests();break;
+            case DISCORD_CACHE:{auto count=backupDiscordCache();notice=count?L"Кэш очищен; резервные папки сохранены":L"Папки кэша не найдены";InvalidateRect(window,nullptr,FALSE);break;}
+            case FAKE_DISCORD:case FAKE_GAME:if(auto v=selected()){replaceFake(*v,utf8(text(FAKE_PICK)),id==FAKE_DISCORD);notice=L"Фейк сохранён с резервной копией. Примените настройки на главной.";InvalidateRect(window,nullptr,FALSE);}break;
+            case USER_DOMAINS:case USER_EXCLUDES:if(auto v=selected()){auto file=v->path/L"lists"/(id==USER_DOMAINS?L"list-general-user.txt":L"list-exclude-user.txt");if(!fs::exists(file))writeBytes(file,"");auto parameters=quoteArg(file.wstring());if((INT_PTR)ShellExecuteW(window,L"open",systemExe(L"notepad.exe").c_str(),parameters.c_str(),nullptr,SW_SHOWNORMAL)<=32)throw std::runtime_error("Не удалось открыть список сайтов.");notice=L"По одному домену в строке. Сохраните список и примените настройки.";InvalidateRect(window,nullptr,FALSE);}break;
             case IMPORT:importFolder();break;
             case START:if(engine.running)engineAction("stop");else if(installs.empty())installVersion("",true);else engineAction("install");break;
             case AUTOSTART:engineAction("install");break;
@@ -308,6 +344,15 @@ void App::installMcp(bool local) {
 void App::job(std::function<JobResult()> work){if(mcpBusy)return;if(mcpWorker.joinable())mcpWorker.join();mcpBusy=true;notice=L"Выполняем настройку…";mount();
     mcpWorker=std::thread([this,work]{auto initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);auto result=std::make_unique<JobResult>();try{*result=work();}catch(const std::exception& e){result->message=wide(e.what());}if(!closing){auto p=result.release();if(!PostMessageW(window,MCP_DONE,0,(LPARAM)p))delete p;}if(SUCCEEDED(initialized))CoUninitialize();});
 }
+void App::runTests(bool strategies,bool all){
+    if(mcpBusy)return;save();auto config=defaultConfig(),reportPath=config.parent_path()/L"test-report.json";auto version=selected()?selected()->path:fs::path{};cancelTests=false;testBusy=true;strategyTesting=strategies;testReport={{"message","Проверяем доступность…"},{"done",false}};
+    if(strategies){std::error_code error;fs::remove(config.parent_path()/L"test-cancel.flag",error);fs::remove(reportPath,error);auto exe=ownExecutable();auto parentId=GetCurrentProcessId();bool parallel=testParallel;job([this,exe,config,reportPath,all,parentId,parallel]{
+        auto parameters=L"--test-action "+std::wstring(all?(parallel?L"all-parallel":L"all"):L"selected")+L" --config "+quoteArg(config.wstring())+L" --parent "+std::to_wstring(parentId);SHELLEXECUTEINFOW s{sizeof(s)};s.fMask=SEE_MASK_NOCLOSEPROCESS;s.lpVerb=L"runas";s.lpFile=exe.c_str();s.lpParameters=parameters.c_str();s.nShow=SW_HIDE;
+        if(!ShellExecuteExW(&s))throw std::runtime_error(GetLastError()==ERROR_CANCELLED?"Запрос прав для тестов отменён.":"Не удалось запустить тесты.");if(!s.hProcess)throw std::runtime_error("Нет доступа к тестовому процессу.");
+        while(WaitForSingleObject(s.hProcess,250)==WAIT_TIMEOUT)if(closing||cancelTests)try{writeBytes(config.parent_path()/L"test-cancel.flag","");}catch(...){}
+        CloseHandle(s.hProcess);if(!fs::exists(reportPath))throw std::runtime_error("Тесты не записали отчёт. Прежний обход сохранён.");JobResult result;result.report=Json::parse(fileBytes(reportPath,2*1024*1024));result.message=wide(result.report.value("message","Тесты завершены"));if(result.report.contains("restore_error"))result.message=L"Не удалось вернуть прежнюю службу. Проверьте диагностику.";return result;
+    });}else job([this,version,reportPath]{auto rows=probeTargets(testTargets(version),[this]{return closing||cancelTests;});JobResult result;result.report={{"schema",1},{"kind","connectivity"},{"done",true},{"cancelled",cancelTests.load()},{"targets",rows},{"score",testScore(rows)},{"message",cancelTests?"Проверка остановлена":"Проверка завершена. TLS/HTTP не подтверждает работу голоса или видео."}};writeJsonAtomic(reportPath,result.report);result.message=wide(result.report["message"]);return result;});
+}
 void App::engineAction(const std::string& action){save();auto exe=ownExecutable();auto config=defaultConfig();job([exe,config,action]{
     auto resultFile=config.parent_path()/L"service-result.json";std::error_code error;fs::remove(resultFile,error);
     auto parameters=L"--engine-action "+wide(action)+L" --config "+quoteArg(config.wstring());SHELLEXECUTEINFOW s{sizeof(s)};s.fMask=SEE_MASK_NOCLOSEPROCESS;s.lpVerb=L"runas";s.lpFile=exe.c_str();s.lpParameters=parameters.c_str();s.nShow=SW_HIDE;
@@ -337,7 +382,7 @@ LRESULT CALLBACK wndProc(HWND h,UINT msg,WPARAM w,LPARAM l) {
             case WM_COMMAND:app->action(LOWORD(w),HIWORD(w));return 0;
             case WM_TIMER:app->poll();return 0;
             case MCP_DONE:app->finishMcp((JobResult*)l);return 0;
-            case WM_CLOSE:app->closing=true;KillTimer(h,1);DestroyWindow(h);return 0;
+            case WM_CLOSE:app->closing=true;app->cancelTests=true;if(app->strategyTesting)try{writeBytes(defaultConfig().parent_path()/L"test-cancel.flag","");}catch(...){}KillTimer(h,1);DestroyWindow(h);return 0;
             case WM_DESTROY:PostQuitMessage(0);return 0;
         }
     }catch(const std::exception& e){MessageBoxW(h,wide(e.what()).c_str(),L"Zapret GUI",MB_OK|MB_ICONINFORMATION);return msg==WM_CREATE?-1:0;}
@@ -347,6 +392,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);
     int argumentCount=0;auto arguments=CommandLineToArgvW(GetCommandLineW(),&argumentCount);
+    if(arguments&&argumentCount==7&&std::wstring(arguments[1])==L"--test-action"&&std::wstring(arguments[3])==L"--config"&&std::wstring(arguments[5])==L"--parent"){
+        fs::path config(arguments[4]);auto mode=std::wstring(arguments[2]);DWORD parentId=wcstoul(arguments[6],nullptr,10);LocalFree(arguments);try{if(mode!=L"all"&&mode!=L"all-parallel"&&mode!=L"selected")throw std::runtime_error("Неизвестный режим теста.");runStrategyTests(config,mode!=L"selected",parentId,mode==L"all-parallel"?3:1);CoUninitialize();return 0;}catch(const std::exception& e){try{writeJsonAtomic(config.parent_path()/L"test-report.json",{{"done",true},{"error",e.what()},{"message",e.what()}});}catch(...){}CoUninitialize();return 1;}
+    }
     if(arguments&&argumentCount==5&&std::wstring(arguments[1])==L"--engine-action"&&std::wstring(arguments[3])==L"--config"){
         fs::path config(arguments[4]);auto action=utf8(arguments[2]);LocalFree(arguments);try{serviceAction(action,config);writeJsonAtomic(config.parent_path()/L"service-result.json",{{"ok",true}});CoUninitialize();return 0;}catch(const std::exception& e){try{writeJsonAtomic(config.parent_path()/L"service-result.json",{{"error",e.what()}});}catch(...){}CoUninitialize();return 1;}
     }
