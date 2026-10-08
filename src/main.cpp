@@ -42,7 +42,7 @@ public:
     Backend backend;ServiceState engine;std::vector<std::string> remoteReleases;
     McpManager mcp;int clientCount=0;bool mcpBusy=false;std::string repoDraft;
     std::thread mcpWorker;std::atomic<bool> closing=false;
-    std::atomic<bool> cancelTests=false;bool testBusy=false,strategyTesting=false,testParallel=true;Json testReport;std::wstring reportText;
+    std::atomic<bool> cancelTests=false;bool testBusy=false,strategyTesting=false,testParallel=true;Json testReport=Json::object();std::wstring reportText;
     std::wstring notice=L"Готово к настройке";
     ~App(){ closing=true;if(mcpWorker.joinable())mcpWorker.join();for(auto f:{font,bold,title,smallFont}) DeleteObject(f); DeleteObject(bgBrush);DeleteObject(panelBrush);DeleteObject(sideBrush); }
     int px(int v) const {return (int)(v*scale);}
